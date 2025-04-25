@@ -1,7 +1,7 @@
 import base64
 from datetime import datetime
 from pathlib import Path
-import pytest
+import pytest, re
 
 class PlaywrightReporter:
     def __init__(self, report_dir="reports"):
@@ -20,7 +20,7 @@ class PlaywrightReporter:
                 page = item.funcargs.get('page', None)
                 if page:
                     screenshot = page.screenshot(type='png')
-                    report.extra = [{'image': screenshot}]
+                    report.extras = [{'image': screenshot}]
             except Exception as e:
                 print(f"Failed to capture screenshot: {e}")
 
@@ -28,23 +28,36 @@ class PlaywrightReporter:
         if report.when == "call":
             file_path, test_name = report.nodeid.split("::", 1) if "::" in report.nodeid else (report.nodeid, "")
             
+            # Remove any pytest markers from test name (including browser tags)
+            test_name = re.sub(r'\s*\[[^\]]+\]\s*', ' ', test_name).strip()
+            
             # Get screenshot from extras if test failed
             screenshot = None
-            if hasattr(report, 'extra'):
-                for extra in report.extra:
+            if hasattr(report, 'extras'):
+                for extra in report.extras:
                     if extra.get('image'):
                         try:
                             screenshot = base64.b64encode(extra['image']).decode('utf-8')
                         except Exception as e:
                             print(f"Failed to encode screenshot: {e}")
 
+            # Determine test status
+            status = report.outcome
+            if report.outcome == "error":
+                # Check if it's a test failure or an error
+                if hasattr(report, 'wasxfail'):
+                    status = "skipped"  # Expected failure
+                elif hasattr(report, 'longrepr') and "AssertionError" in str(report.longrepr):
+                    status = "failed"  # Test failure
+                else:
+                    status = "error"  # Other types of errors
+
             test_result = {
                 "file": file_path,
                 "name": test_name,
-                "status": report.outcome,
+                "status": status,
                 "duration": report.duration * 1000,  # Convert to milliseconds
-                "error": str(report.longrepr) if report.failed else None,
-                "browser": "chromium",
+                "error": str(report.longrepr) if report.failed or report.outcome == "error" else None,
                 "screenshot": screenshot
             }
             self.test_results.append(test_result)
@@ -52,12 +65,18 @@ class PlaywrightReporter:
     def pytest_sessionfinish(self, session):
         duration = (datetime.now() - self.start_time).total_seconds()
         
+        # Count different types of test results
+        passed_count = len([r for r in self.test_results if r["status"] == "passed"])
+        failed_count = len([r for r in self.test_results if r["status"] == "failed"])
+        error_count = len([r for r in self.test_results if r["status"] == "error"])
+        skipped_count = len([r for r in self.test_results if r["status"] == "skipped"])
+        
         summary = {
             "total": len(self.test_results),
-            "passed": len([r for r in self.test_results if r["status"] == "passed"]),
-            "failed": len([r for r in self.test_results if r["status"] == "failed"]),
-            "flaky": 0,
-            "skipped": len([r for r in self.test_results if r["status"] == "skipped"]),
+            "passed": passed_count,
+            "failed": failed_count,
+            "error": error_count,
+            "skipped": skipped_count,
             "duration": duration
         }
 
@@ -66,7 +85,7 @@ class PlaywrightReporter:
     def generate_html_report(self, summary):
         html_content = f"""
 <!DOCTYPE html>
-<html data-theme="dark">
+<html>
 <head>
     <meta charset="utf-8">
     <title>Playwright Test Results</title>
@@ -85,6 +104,14 @@ class PlaywrightReporter:
             --color-flaky: #d2c329;
             --color-selected-bg: #2f2f2f;
             --max-width: 980px;
+        }}
+
+        [data-theme="light"] {{
+            --color-bg: #ffffff;
+            --color-text: #1c1c1c;
+            --color-text-secondary: #666666;
+            --color-border: #e0e0e0;
+            --color-selected-bg: #f5f5f5;
         }}
 
         * {{
@@ -110,6 +137,35 @@ class PlaywrightReporter:
             border-bottom: 1px solid var(--color-border);
         }}
 
+        .title-container {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1rem;
+        }}
+
+        .theme-switch {{
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 0.5rem;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--color-text);
+            transition: background-color 0.3s;
+        }}
+
+        .theme-switch:hover {{
+            background: var(--color-selected-bg);
+        }}
+
+        .theme-switch svg {{
+            width: 20px;
+            height: 20px;
+        }}
+
         .title {{
             font-size: 1.5rem;
             font-weight: 600;
@@ -125,8 +181,7 @@ class PlaywrightReporter:
 
         .search-bar {{
             flex: 1;
-            background: #000;
-            border: none;
+            background: var(--color-selected-bg);
             border: 1px solid var(--color-border);
             border-radius: 5px;
             color: var(--color-text);
@@ -137,7 +192,7 @@ class PlaywrightReporter:
 
         .search-bar:focus {{
             outline: none;
-            border-bottom-color: var(--color-text);
+            border-color: var(--color-text);
         }}
 
         .tabs {{
@@ -209,24 +264,26 @@ class PlaywrightReporter:
         .test-status {{
             width: 16px;
             height: 16px;
-            border-radius: 50%;
             flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }}
 
         .status-passed {{
-            background: var(--color-passed);
+            color: var(--color-passed);
         }}
 
         .status-failed {{
-            background: var(--color-failed);
+            color: var(--color-failed);
         }}
 
         .status-skipped {{
-            background: var(--color-skipped);
+            color: var(--color-skipped);
         }}
 
         .status-flaky {{
-            background: var(--color-flaky);
+            color: var(--color-flaky);
         }}
 
         .test-name {{
@@ -322,7 +379,7 @@ class PlaywrightReporter:
         .error-trace pre {{
             margin: 0;
             padding: 1rem;
-            background: #1e1e1e !important;
+            background: var(--color-selected-bg) !important;
             border-radius: 4px;
             white-space: pre;
             overflow-x: auto;
@@ -337,8 +394,8 @@ class PlaywrightReporter:
         }}
 
         .hljs {{
-            background: #1e1e1e !important;
-            color: #d4d4d4 !important;
+            background: var(--color-selected-bg) !important;
+            color: var(--color-text) !important;
         }}
 
         .error-trace .hljs {{
@@ -379,7 +436,15 @@ class PlaywrightReporter:
 <body>
     <div class="container">
         <div class="header">
-            <h1 class="title">Playwright Test Results</h1>
+            <div class="title-container">
+                <h1 class="title">Playwright Test Results</h1>
+                <button class="theme-switch" id="themeSwitch" aria-label="Toggle theme">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="5"/>
+                        <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                    </svg>
+                </button>
+            </div>
             <div class="controls">
                 <input type="text" class="search-bar" placeholder="Search" id="searchInput">
                 <div class="tabs">
@@ -392,8 +457,8 @@ class PlaywrightReporter:
                     <div class="tab" data-status="failed">
                         Failed <span class="tab-count">{summary['failed']}</span>
                     </div>
-                    <div class="tab" data-status="flaky">
-                        Flaky <span class="tab-count">{summary['flaky']}</span>
+                    <div class="tab" data-status="error">
+                        Error <span class="tab-count">{summary['error']}</span>
                     </div>
                     <div class="tab" data-status="skipped">
                         Skipped <span class="tab-count">{summary['skipped']}</span>
@@ -412,6 +477,55 @@ class PlaywrightReporter:
     </div>
 
     <script>
+        // Theme handling
+        const themeSwitch = document.getElementById('themeSwitch');
+        const html = document.documentElement;
+        
+        // Check for saved theme preference or use system preference
+        const savedTheme = localStorage.getItem('theme');
+        const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        
+        if (savedTheme) {{
+            html.setAttribute('data-theme', savedTheme);
+        }} else {{
+            html.setAttribute('data-theme', systemPrefersDark ? 'dark' : 'light');
+        }}
+
+        // Listen for system theme changes
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {{
+            if (!localStorage.getItem('theme')) {{
+                html.setAttribute('data-theme', e.matches ? 'dark' : 'light');
+                updateThemeIcon();
+            }}
+        }});
+
+        // Toggle theme on button click
+        themeSwitch.addEventListener('click', () => {{
+            const currentTheme = html.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeIcon();
+        }});
+
+        // Update theme switch icon based on current theme
+        function updateThemeIcon() {{
+            const isDark = html.getAttribute('data-theme') === 'dark';
+            themeSwitch.innerHTML = isDark ? `
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="5"/>
+                    <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                </svg>
+            ` : `
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                </svg>
+            `;
+        }}
+
+        // Initial icon update
+        updateThemeIcon();
+
         document.addEventListener('DOMContentLoaded', function() {{
             // Register a custom language for pytest traceback
             hljs.registerLanguage('pytb', function(hljs) {{
@@ -548,6 +662,14 @@ class PlaywrightReporter:
                 tests_by_file[file_path] = []
             tests_by_file[file_path].append(test)
 
+        # Define status icons
+        status_icons = {
+            'passed': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+            'failed': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+            'skipped': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>',
+            'flaky': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'
+        }
+
         # Generate HTML for each file and its tests
         html_parts = []
         for file_path, tests in tests_by_file.items():
@@ -568,9 +690,10 @@ class PlaywrightReporter:
                 file_html += f"""
                     <div class="test-item">
                         <div class="test-header">
-                            <div class="test-status status-{test['status']}" data-status="{test['status']}"></div>
+                            <div class="test-status status-{test['status']}" data-status="{test['status']}">
+                                {status_icons.get(test['status'], '')}
+                            </div>
                             <div class="test-name">{test['name']}</div>
-                            <div class="test-browser">{test ['browser']}</div>
                             <div class="test-duration">{duration_text}</div>
                         </div>
                     </div>

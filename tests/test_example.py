@@ -15,3 +15,24 @@ def test_get_started_link(page: Page):
 
     # Expects page to have a heading with the name of Installation.
     expect(page.get_by_role("heading", name="Installationt")).to_be_visible()
+
+def test_error_occured(page: Page):
+    page.goto("https://playwright.dev/")
+
+    # Click the get started link.
+    page.get_by_text("API").click()
+
+    # Expects page to have a heading with the name of Installation.
+    expect(page.get_by_role("heading", name="Installationt")).to_be_visible()
+
+def test_visible_locator(page: Page):
+    page.goto("https://playwright.dev/")
+
+    # Expects page to have a heading with the name of Installation.
+    expect(page.get_by_role("heading", name="Installationtt")).to_be_visible()
+
+def test_visible_locator2(page: Page):
+    page.goto("https://playwright.dev/")
+
+    # Expects page to have a heading with the name of Installation.
+    expect(page.get_by_role("heading", name="Installationtt")).to_be_visible()
